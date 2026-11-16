@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Erosionsrisiko Dauergrünland – Monatsslider</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  :root { --bg:#ffffff; --fg:#1d2733; --muted:#5b6876; --line:#d7dde4; --accent:#c8102e; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--fg); }
+  #map { position:absolute; inset:0; }
+  .card { position:absolute; background:var(--bg); border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,.25); }
+  #title { top:12px; left:12px; max-width:340px; padding:12px 14px; }
+  #title h1 { font-size:16px; margin:0 0 4px; }
+  #title p { font-size:12px; margin:0; color:var(--muted); line-height:1.4; }
+  #title a { color:var(--accent); }
+  #panel { left:50%; transform:translateX(-50%); bottom:24px; width:min(760px, calc(100% - 24px)); padding:14px 18px 12px; }
+  #monthLabel { font-size:30px; font-weight:700; line-height:1; margin:0 0 8px; min-height:34px; }
+  .row { display:flex; align-items:center; gap:10px; }
+  button { font:inherit; border:1px solid var(--line); background:#f5f7f9; border-radius:8px; padding:6px 12px; cursor:pointer; }
+  button:hover { background:#e9edf1; }
+  button:disabled { opacity:.5; cursor:default; }
+  #play { min-width:44px; font-size:16px; }
+  #slider { flex:1; accent-color:var(--accent); }
+  .ticks { display:flex; justify-content:space-between; margin:2px 0 0 106px; font-size:11px; color:var(--muted); }
+  .ticks span { width:0; display:flex; justify-content:center; }
+  .ticks span.on { color:var(--fg); font-weight:700; }
+  .legend { margin-top:12px; display:flex; align-items:center; gap:10px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
+  #ramp { flex:1; min-width:140px; max-width:300px; height:12px; border-radius:6px; border:1px solid var(--line); }
+  .legend input[type=number] { width:70px; font:inherit; padding:3px 5px; border:1px solid var(--line); border-radius:6px; }
+  .legend label { display:inline-flex; align-items:center; gap:4px; }
+  .small { font-size:12px; }
+  #readout { position:absolute; top:12px; right:12px; padding:8px 12px; font-size:13px; min-width:150px; display:none; }
+  #status { position:absolute; inset:auto 12px 150px 12px; margin:auto; width:min(560px, calc(100% - 24px)); padding:10px 14px; font-size:13px; display:none; }
+  #status.err { border-left:5px solid #c8102e; }
+  #status.info { border-left:5px solid #2a6ebb; }
+  #bar { height:4px; background:#e5e9ee; border-radius:2px; margin-top:6px; overflow:hidden; }
+  #bar > div { height:100%; width:0; background:#2a6ebb; transition:width .2s; }
+  #loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.55); font-size:14px; z-index:5; pointer-events:none; }
+  #loading .box { background:#fff; border-radius:10px; padding:14px 18px; box-shadow:0 2px 12px rgba(0,0,0,.2); min-width:240px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="title" class="card">
+  <h1>Erosionsrisiko Dauergrünland</h1>
+  <p>Durchschnittlicher Bodenabtrag pro Monat in t/(ha·Monat), 100&nbsp;m, berechnet mit RUSLE.
+  Quelle: <a href="https://data.geo.admin.ch/browser/index.html#/collections/ch.bafu.erosion-gruenland_bodenabtrag" target="_blank" rel="noopener">BAFU, ch.bafu.erosion-gruenland_bodenabtrag</a>.
+  Die Monate sind Jahresgang-Karten, kein bestimmtes Jahr.</p>
+</div>
+
+<div id="readout" class="card"></div>
+
+<div id="loading"><div class="box"><div id="loadText">Lade Daten …</div><div id="bar"><div></div></div></div></div>
+<div id="status" class="card"></div>
+
+<div id="panel" class="card">
+  <div id="monthLabel">–</div>
+  <div class="row">
+    <button id="prev" title="Vorheriger Monat" disabled>◀</button>
+    <button id="play" title="Abspielen / Pause (Leertaste)" disabled>▶</button>
+    <button id="next" title="Nächster Monat" disabled>▶|</button>
+    <input id="slider" type="range" min="0" max="11" step="1" value="0" disabled aria-label="Monat">
+  </div>
+  <div class="ticks" id="ticks"></div>
+  <div class="legend">
+    <span>0</span>
+    <div id="ramp"></div>
+    <label>≥ <input id="max" type="number" min="0.01" step="any" disabled> t/(ha·Monat)</label>
+    <button id="auto" class="small" disabled>Auto</button>
+    <label class="small"><input id="hideZero" type="checkbox" disabled> Nullwerte ausblenden</label>
+    <label class="small">Deckkraft <input id="opacity" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
+    <label class="small">Tempo
+      <select id="speed"><option value="1600">langsam</option><option value="900" selected>normal</option><option value="450">schnell</option></select>
+    </label>
+    <label class="small">Auflösung
+      <select id="quality"><option value="800">schnell</option><option value="1500" selected>mittel</option><option value="99999">voll</option></select>
+    </label>
+  </div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
+<script>
+// ==== CORE ====
+// Reine Rechenlogik (ohne DOM): Umprojektion LV95 -> Web-Mercator, Einfärbung, Statistik.
+var LV95 = "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.374,15.056,405.346 +units=m +no_defs";
+var R_EARTH = 6378137;
+function mercX(lon) { return R_EARTH * lon * Math.PI / 180; }
+function mercY(lat) { return R_EARTH * Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)); }
+function invMercX(x) { return x / R_EARTH * 180 / Math.PI; }
+function invMercY(y) { return (2 * Math.atan(Math.exp(y / R_EARTH)) - Math.PI / 2) * 180 / Math.PI; }
+
+// Gitter aus der Bounding Box der Vollauflösung; w/h der gelesenen Ebene (Overviews haben meist keine Geo-Tags)
+function gridFromBBox(bb, w, h) {
+  return { minE: bb[0], minN: bb[1], maxE: bb[2], maxN: bb[3], w: w, h: h,
+           resE: (bb[2] - bb[0]) / w, resN: (bb[3] - bb[1]) / h };
+}
+function gridKey(g) { return [g.w, g.h, g.minE, g.minN, g.maxE, g.maxN].join("|"); }
+
+// Pro Ausgabepixel (Web-Mercator-Raster) der Index des Quellpixels (oder -1).
+// Die exakte Transformation wird nur auf einem groben Gitter (alle S Pixel) gerechnet und bilinear interpoliert.
+function buildMapping(g, maxPx, S) {
+  maxPx = maxPx || 3000; S = S || 8;
+  var toWgs = proj4(LV95, "EPSG:4326");
+  var lonMin = Infinity, lonMax = -Infinity, latMin = Infinity, latMax = -Infinity;
+  function acc(e, n) {
+    var ll = toWgs.forward([e, n]);
+    if (ll[0] < lonMin) lonMin = ll[0]; if (ll[0] > lonMax) lonMax = ll[0];
+    if (ll[1] < latMin) latMin = ll[1]; if (ll[1] > latMax) latMax = ll[1];
+  }
+  var N = 60;
+  for (var i = 0; i <= N; i++) {
+    var t = i / N, e = g.minE + t * (g.maxE - g.minE), n = g.minN + t * (g.maxN - g.minN);
+    acc(e, g.minN); acc(e, g.maxN); acc(g.minE, n); acc(g.maxE, n);
+  }
+  var mx0 = mercX(lonMin), mx1 = mercX(lonMax), my0 = mercY(latMin), my1 = mercY(latMax);
+  var latC = (latMin + latMax) / 2;
+  var p = g.resE / Math.cos(latC * Math.PI / 180);
+  var W = Math.ceil((mx1 - mx0) / p), H = Math.ceil((my1 - my0) / p);
+  var k = Math.max(W, H) / maxPx;
+  if (k > 1) { p *= k; W = Math.ceil((mx1 - mx0) / p); H = Math.ceil((my1 - my0) / p); }
+
+  var nx = Math.ceil(W / S) + 2, ny = Math.ceil(H / S) + 2;
+  var cols = new Float64Array(nx * ny), rows = new Float64Array(nx * ny);
+  for (var j = 0; j < ny; j++) {
+    for (var ii = 0; ii < nx; ii++) {
+      var x = mx0 + ii * S * p, y = my1 - j * S * p;
+      var en = toWgs.inverse([invMercX(x), invMercY(y)]);
+      cols[j * nx + ii] = (en[0] - g.minE) / g.resE;
+      rows[j * nx + ii] = (g.maxN - en[1]) / g.resN;
+    }
+  }
+  var idx = new Int32Array(W * H);
+  for (var py = 0; py < H; py++) {
+    var v = (py + 0.5) / S, jj = Math.min(Math.floor(v), ny - 2), fy = v - jj;
+    for (var px = 0; px < W; px++) {
+      var u = (px + 0.5) / S, i2 = Math.min(Math.floor(u), nx - 2), fx = u - i2;
+      var a = jj * nx + i2, b = a + 1, c2 = a + nx, d = c2 + 1;
+      var col = (cols[a] * (1 - fx) + cols[b] * fx) * (1 - fy) + (cols[c2] * (1 - fx) + cols[d] * fx) * fy;
+      var row = (rows[a] * (1 - fx) + rows[b] * fx) * (1 - fy) + (rows[c2] * (1 - fx) + rows[d] * fx) * fy;
+      var ci = Math.floor(col), ri = Math.floor(row);
+      idx[py * W + px] = (ci >= 0 && ci < g.w && ri >= 0 && ri < g.h) ? ri * g.w + ci : -1;
+    }
+  }
+  var lon0 = invMercX(mx0), lon1 = invMercX(mx0 + W * p), lat1 = invMercY(my1), lat0 = invMercY(my1 - H * p);
+  return { W: W, H: H, idx: idx,
+           coordinates: [[lon0, lat1], [lon1, lat1], [lon1, lat0], [lon0, lat0]], // TL, TR, BR, BL
+           bounds: [[lon0, lat0], [lon1, lat1]] };
+}
+
+// Farbrampe grün -> gelb -> rot (niedriges, mittleres, hohes Risiko), 256 Stufen RGBA
+function makeLUT(alpha) {
+  var stops = [[26,152,80],[145,207,96],[217,239,139],[254,224,139],[252,141,89],[215,48,39]];
+  var lut = new Uint8ClampedArray(256 * 4);
+  for (var i = 0; i < 256; i++) {
+    var t = i / 255 * (stops.length - 1), k = Math.min(Math.floor(t), stops.length - 2), f = t - k;
+    for (var c = 0; c < 3; c++) lut[i * 4 + c] = Math.round(stops[k][c] * (1 - f) + stops[k + 1][c] * f);
+    lut[i * 4 + 3] = alpha == null ? 255 : alpha;
+  }
+  return lut;
+}
+
+function isValid(v, nodata) {
+  return v === v && isFinite(v) && v > -1e30 && v !== nodata;
+}
+
+function renderRGBA(mapping, data, nodata, lut, max, hideZero) {
+  var idx = mapping.idx, out = new Uint8ClampedArray(mapping.W * mapping.H * 4), inv = 255 / max;
+  for (var k = 0; k < idx.length; k++) {
+    var s = idx[k]; if (s < 0) continue;
+    var v = data[s];
+    if (!isValid(v, nodata)) continue;
+    if (hideZero && v <= 0) continue;
+    var t = v * inv; t = t < 0 ? 0 : (t > 255 ? 255 : (t | 0));
+    var o = k * 4, l = t * 4;
+    out[o] = lut[l]; out[o + 1] = lut[l + 1]; out[o + 2] = lut[l + 2]; out[o + 3] = lut[l + 3];
+  }
+  return out;
+}
+
+// Quantil über alle Monate (nur gültige Werte > 0), mit Stichprobe für Geschwindigkeit
+function pooledQuantile(list, q) {
+  var total = 0, i, k;
+  for (i = 0; i < list.length; i++) total += list[i].data.length;
+  var stride = Math.max(1, Math.floor(total / 400000)), vals = [];
+  for (i = 0; i < list.length; i++) {
+    var d = list[i].data, nd = list[i].nodata;
+    for (k = 0; k < d.length; k += stride) { var v = d[k]; if (isValid(v, nd) && v > 0) vals.push(v); }
+  }
+  if (!vals.length) return 1;
+  vals.sort(function (a, b) { return a - b; });
+  return vals[Math.min(vals.length - 1, Math.floor(q * vals.length))];
+}
+function niceMax(x) { var n = Number(Number(x).toPrecision(2)); return n > 0 ? n : 1; }
+
+// Wert an einer Lon/Lat-Position
+function sampleAt(rec, lng, lat) {
+  var g = rec.grid, en = proj4("EPSG:4326", LV95).forward([lng, lat]);
+  var c = Math.floor((en[0] - g.minE) / g.resE), r = Math.floor((g.maxN - en[1]) / g.resN);
+  if (c < 0 || c >= g.w || r < 0 || r >= g.h) return null;
+  var v = rec.data[r * g.w + c];
+  return isValid(v, rec.nodata) ? v : null;
+}
+
+// Bild aus geotiff.js: gewählte Überblicksstufe lesen
+async function readImage(tiff, targetWidth) {
+  var full = await tiff.getImage(0);
+  var bb = full.getBoundingBox();
+  var n = await tiff.getImageCount(), best = 0;
+  for (var i = 1; i < n; i++) {
+    var im = await tiff.getImage(i);
+    if (im.getWidth() >= targetWidth) best = i; else break;
+  }
+  var image = await tiff.getImage(best);
+  var rast = await image.readRasters({ samples: [0] });
+  var nd = image.getGDALNoData();
+  if (nd == null) nd = full.getGDALNoData();
+  return { data: rast[0], nodata: nd == null ? null : Number(nd), grid: gridFromBBox(bb, image.getWidth(), image.getHeight()), level: best };
+}
+// ==== /CORE ====
+</script>
+
+<script>
+(function () {
+  var MONTHS = ["jan","feb","mrz","apr","mai","jun","jul","aug","sep","okt","nov","dez"];
+  var NAMES  = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+  var SHORT  = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
+  var BASE = "https://data.geo.admin.ch/ch.bafu.erosion-gruenland_bodenabtrag/";
+  function urlFor(m) { return BASE + "erosion-gruenland_bodenabtrag_" + m + "/erosion-gruenland_bodenabtrag_" + m + "_2056.tif"; }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var recs = new Array(12), maps = {}, blobUrls = new Array(12), current = 0, timer = null, ready = false, maxVal = 1, autoMax = 1;
+  var lut = makeLUT(235);
+
+  // Ticks
+  (function () {
+    var t = $("ticks");
+    SHORT.forEach(function (s, i) { var sp = document.createElement("span"); sp.id = "tick" + i; sp.textContent = s; t.appendChild(sp); });
+  })();
+  // Legendenverlauf
+  (function () {
+    var stops = [];
+    for (var i = 0; i <= 8; i++) { var k = Math.round(i / 8 * 255) * 4; stops.push("rgb(" + lut[k] + "," + lut[k + 1] + "," + lut[k + 2] + ") " + (i / 8 * 100) + "%"); }
+    $("ramp").style.background = "linear-gradient(to right," + stops.join(",") + ")";
+  })();
+
+  function status(msg, kind) {
+    var s = $("status");
+    if (!msg) { s.style.display = "none"; return; }
+    s.className = "card " + (kind || "info"); s.innerHTML = msg; s.style.display = "block";
+  }
+  function progress(done, total, text) {
+    $("loadText").textContent = text;
+    $("bar").firstElementChild.style.width = Math.round(done / total * 100) + "%";
+  }
+
+  // Karte mit swisstopo-Hintergrund
+  var map = new maplibregl.Map({
+    container: "map",
+    center: [8.2, 46.8], zoom: 7,
+    style: {
+      version: 8,
+      sources: { base: { type: "raster", tileSize: 256, maxzoom: 18,
+        tiles: ["https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-grau/default/current/3857/{z}/{x}/{y}.jpeg"],
+        attribution: "© <a href='https://www.swisstopo.admin.ch' target='_blank'>swisstopo</a> | Daten: <a href='https://www.bafu.admin.ch' target='_blank'>BAFU</a>" } },
+      layers: [{ id: "base", type: "raster", source: "base" }]
+    }
+  });
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  var mapLoaded = new Promise(function (res) { map.on("load", res); });
+
+  async function loadAll() {
+    ready = false;
+    $("loading").style.display = "flex";
+    status(null);
+    var target = Number($("quality").value);
+    var done = 0, next = 0, failed = null;
+    progress(0, 12, "Lade Monatsdaten …");
+    async function worker() {
+      while (next < 12 && !failed) {
+        var i = next++;
+        try {
+          var tiff = await GeoTIFF.fromUrl(urlFor(MONTHS[i]), { allowFullFile: false });
+          recs[i] = await readImage(tiff, target);
+        } catch (e) { failed = { i: i, e: e }; return; }
+        done++; progress(done, 12, "Lade Monatsdaten … " + done + " / 12");
+      }
+    }
+    await Promise.all([worker(), worker(), worker()]);
+    if (failed) {
+      $("loading").style.display = "none";
+      status("<b>Laden fehlgeschlagen</b> (" + NAMES[failed.i] + "): " + (failed.e && failed.e.message ? failed.e.message : failed.e) +
+        "<br>Häufigste Ursache: Der Server erlaubt keine Browser-Zugriffe von dieser Adresse (CORS, Range-Header). " +
+        "Dann die COGs auf einen eigenen Bucket mit CORS-Freigabe kopieren und <code>BASE</code> im Skript anpassen. Details in der Browser-Konsole (F12).", "err");
+      console.error(failed.e);
+      return;
+    }
+    progress(12, 12, "Rechne Umprojektion und Farben …");
+    await new Promise(function (r) { setTimeout(r, 30); });
+
+    // Umprojektion (pro Gitter einmal)
+    maps = {};
+    recs.forEach(function (r) { var k = gridKey(r.grid); if (!maps[k]) maps[k] = buildMapping(r.grid, 3000, 8); });
+
+    // Farbskala: einheitlich über alle Monate
+    autoMax = niceMax(pooledQuantile(recs, 0.98));
+    maxVal = autoMax;
+    $("max").value = maxVal;
+
+    await mapLoaded;
+    await renderAll();
+    var first = maps[gridKey(recs[0].grid)];
+    map.fitBounds(first.bounds, { padding: { top: 60, bottom: 190, left: 40, right: 40 }, duration: 0 });
+    $("loading").style.display = "none";
+    ["slider", "prev", "play", "next", "max", "auto", "hideZero"].forEach(function (id) { $(id).disabled = false; });
+    ready = true;
+    show(current);
+  }
+
+  function toBlobURL(rgba, W, H) {
+    var c = document.createElement("canvas"); c.width = W; c.height = H;
+    c.getContext("2d").putImageData(new ImageData(rgba, W, H), 0, 0);
+    return new Promise(function (res) { c.toBlob(function (b) { res(URL.createObjectURL(b)); }, "image/png"); });
+  }
+
+  async function renderAll() {
+    var hideZero = $("hideZero").checked;
+    for (var i = 0; i < 12; i++) {
+      var m = maps[gridKey(recs[i].grid)];
+      var rgba = renderRGBA(m, recs[i].data, recs[i].nodata, lut, maxVal, hideZero);
+      var url = await toBlobURL(rgba, m.W, m.H);
+      var old = blobUrls[i]; blobUrls[i] = url;
+      var id = "m" + i;
+      if (map.getSource(id)) {
+        map.getSource(id).updateImage({ url: url, coordinates: m.coordinates });
+      } else {
+        map.addSource(id, { type: "image", url: url, coordinates: m.coordinates });
+        map.addLayer({ id: id, type: "raster", source: id,
+          paint: { "raster-opacity": 0, "raster-fade-duration": 0, "raster-resampling": "nearest" } });
+      }
+      if (old) setTimeout(function (u) { URL.revokeObjectURL(u); }.bind(null, old), 3000);
+    }
+  }
+
+  function show(i) {
+    current = ((i % 12) + 12) % 12;
+    $("slider").value = current;
+    $("monthLabel").textContent = NAMES[current];
+    var op = Number($("opacity").value);
+    for (var k = 0; k < 12; k++) {
+      if (map.getLayer("m" + k)) map.setPaintProperty("m" + k, "raster-opacity", k === current ? op : 0);
+      $("tick" + k).className = k === current ? "on" : "";
+    }
+  }
+
+  function setPlaying(on) {
+    if (timer) { clearInterval(timer); timer = null; }
+    $("play").textContent = on ? "⏸" : "▶";
+    if (on) timer = setInterval(function () { show(current + 1); }, Number($("speed").value));
+  }
+
+  // Events
+  $("slider").addEventListener("input", function () { show(Number(this.value)); });
+  $("prev").addEventListener("click", function () { setPlaying(false); show(current - 1); });
+  $("next").addEventListener("click", function () { setPlaying(false); show(current + 1); });
+  $("play").addEventListener("click", function () { setPlaying(!timer); });
+  $("speed").addEventListener("change", function () { if (timer) setPlaying(true); });
+  $("opacity").addEventListener("input", function () { if (ready) show(current); });
+  document.addEventListener("keydown", function (e) {
+    if (!ready || /INPUT|SELECT/.test(e.target.tagName) && e.target.type !== "range") return;
+    if (e.key === "ArrowLeft") { setPlaying(false); show(current - 1); }
+    else if (e.key === "ArrowRight") { setPlaying(false); show(current + 1); }
+    else if (e.key === " ") { e.preventDefault(); setPlaying(!timer); }
+  });
+  var rerenderT = null;
+  function rerenderSoon() { clearTimeout(rerenderT); rerenderT = setTimeout(async function () { await renderAll(); show(current); }, 250); }
+  $("max").addEventListener("input", function () { var v = Number(this.value); if (v > 0) { maxVal = v; rerenderSoon(); } });
+  $("auto").addEventListener("click", function () { maxVal = autoMax; $("max").value = autoMax; rerenderSoon(); });
+  $("hideZero").addEventListener("change", rerenderSoon);
+  $("quality").addEventListener("change", function () { setPlaying(false); loadAll(); });
+
+  // Wert unter dem Mauszeiger
+  var ro = $("readout");
+  map.on("mousemove", function (e) {
+    if (!ready) return;
+    var v = sampleAt(recs[current], e.lngLat.lng, e.lngLat.lat);
+    if (v == null) { ro.style.display = "none"; return; }
+    ro.style.display = "block";
+    ro.innerHTML = "<b>" + NAMES[current] + "</b><br>" + (Math.round(v * 1000) / 1000) + " t/(ha·Monat)";
+  });
+  map.on("mouseout", function () { ro.style.display = "none"; });
+
+  loadAll();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Erosionsrisiko Dauergrünland – Monatsslider</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.17.0/dist/maplibre-gl.css">
+<style>
+  :root { --bg:#ffffff; --fg:#1d2733; --muted:#5b6876; --line:#d7dde4; --accent:#c8102e; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--fg); }
+  #map { position:absolute; inset:0; }
+  .card { position:absolute; background:var(--bg); border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,.25); }
+  #title { top:12px; left:12px; max-width:340px; padding:12px 14px; z-index:2; }
+  #title h1 { font-size:16px; margin:0 0 4px; }
+  #title p { font-size:12px; margin:0; color:var(--muted); line-height:1.4; }
+  #title a { color:var(--accent); }
+  #panel { left:50%; transform:translateX(-50%); bottom:30px; width:min(760px, calc(100% - 24px)); padding:14px 18px 12px; z-index:2; }
+  #monthLabel { font-size:30px; font-weight:700; line-height:1; margin:0 0 8px; min-height:34px; }
+  .row { display:flex; align-items:center; gap:10px; }
+  button { font:inherit; border:1px solid var(--line); background:#f5f7f9; border-radius:8px; padding:6px 12px; cursor:pointer; }
+  button:hover { background:#e9edf1; }
+  button:disabled { opacity:.5; cursor:default; }
+  #play { min-width:44px; font-size:16px; }
+  #slider { flex:1; accent-color:var(--accent); }
+  .ticks { display:flex; justify-content:space-between; margin:2px 0 0 106px; font-size:11px; color:var(--muted); }
+  .ticks span { width:0; display:flex; justify-content:center; }
+  .ticks span.on { color:var(--fg); font-weight:700; }
+  .legend { margin-top:12px; display:flex; align-items:center; gap:10px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
+  #ramp { flex:1; min-width:140px; max-width:300px; height:12px; border-radius:6px; border:1px solid var(--line); }
+  .legend input[type=number] { width:70px; font:inherit; padding:3px 5px; border:1px solid var(--line); border-radius:6px; }
+  .legend label { display:inline-flex; align-items:center; gap:4px; }
+  .small { font-size:12px; }
+  #readout { top:12px; right:56px; padding:8px 12px; font-size:13px; min-width:170px; display:none; z-index:2; }
+  #readout .xy { color:var(--muted); font-size:11px; }
+  #status { inset:auto 12px 190px 12px; margin:auto; width:min(560px, calc(100% - 24px)); padding:10px 14px; font-size:13px; display:none; z-index:3; height:fit-content; }
+  #status.err { border-left:5px solid #c8102e; }
+  #status.info { border-left:5px solid #2a6ebb; }
+  #bar { height:4px; background:#e5e9ee; border-radius:2px; margin-top:6px; overflow:hidden; }
+  #bar > div { height:100%; width:0; background:#2a6ebb; transition:width .2s; }
+  #loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.55); font-size:14px; z-index:5; pointer-events:none; }
+  #loading .box { background:#fff; border-radius:10px; padding:14px 18px; box-shadow:0 2px 12px rgba(0,0,0,.2); min-width:240px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="title" class="card">
+  <h1>Erosionsrisiko Dauergrünland</h1>
+  <p>Durchschnittlicher Bodenabtrag pro Monat in t/(ha·Monat), 100&nbsp;m, berechnet mit RUSLE.
+  Quelle: <a href="https://data.geo.admin.ch/browser/index.html#/collections/ch.bafu.erosion-gruenland_bodenabtrag" target="_blank" rel="noopener">BAFU, ch.bafu.erosion-gruenland_bodenabtrag</a>
+  (COGs aus dem STAC-Katalog von data.geo.admin.ch, kachelweise gestreamt). Die Monate sind Jahresgang-Karten, kein bestimmtes Jahr.</p>
+</div>
+
+<div id="readout" class="card"></div>
+<div id="loading"><div class="box"><div id="loadText">Lade …</div><div id="bar"><div></div></div></div></div>
+<div id="status" class="card"></div>
+
+<div id="panel" class="card">
+  <div id="monthLabel">–</div>
+  <div class="row">
+    <button id="prev" title="Vorheriger Monat" disabled>◀</button>
+    <button id="play" title="Abspielen / Pause (Leertaste)" disabled>▶</button>
+    <button id="next" title="Nächster Monat" disabled>▶|</button>
+    <input id="slider" type="range" min="0" max="11" step="1" value="0" disabled aria-label="Monat">
+  </div>
+  <div class="ticks" id="ticks"></div>
+  <div class="legend">
+    <span>0</span>
+    <div id="ramp"></div>
+    <label>≥ <input id="max" type="number" min="0.01" step="any" disabled> t/(ha·Monat)</label>
+    <button id="auto" class="small" disabled>Auto</button>
+    <label class="small"><input id="hideZero" type="checkbox" disabled> Nullwerte ausblenden</label>
+    <label class="small">Deckkraft <input id="opacity" type="range" min="0.2" max="1" step="0.05" value="0.85"></label>
+    <label class="small">Tempo
+      <select id="speed"><option value="2000">langsam</option><option value="1100" selected>normal</option><option value="600">schnell</option></select>
+    </label>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/proj4@2.22.0/dist/proj4.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script type="module">
+/* Teile dieser Seite (Projektion, Kachelprotokoll, COG-Pyramide mit Window-Reads, WMTS-Raster) sind aus dem
+   swisseo-browser übernommen und angepasst: MIT License, Copyright (c) 2023 eu-cdse,
+   github.com/swisstopo/topo-swisseobrowser
+
+   Aufbau nach dem swisstopo swisseo-browser (github.com/swisstopo/topo-swisseobrowser):
+   - die Karte läuft nativ in EPSG:2056 (MapLibre addProjection), COGs und Hintergrund werden nicht umprojiziert
+   - jede Kachel wird über ein eigenes Protokoll (erosion://) gezeichnet: aus den COG-Overviews gelesen (geotiff.js, Window-Reads)
+   - die swisstopo-WMTS-Kacheln (LV95) werden in das 512-px-Kachelraster der Karte gelegt
+   Die COG-Adressen kommen zur Laufzeit aus dem STAC-Katalog. */
+
+const CFG = Object.assign({
+  stacItems: "https://data.geo.admin.ch/api/stac/v1/collections/ch.bafu.erosion-gruenland_bodenabtrag/items?limit=100",
+  fallbackBase: "https://data.geo.admin.ch/ch.bafu.erosion-gruenland_bodenabtrag/",
+  maplibre: "https://cdn.jsdelivr.net/npm/maplibre-gl@6.17.0/dist/maplibre-gl.mjs",
+  maplibreWorker: "https://cdn.jsdelivr.net/npm/maplibre-gl@6.17.0/dist/maplibre-gl-worker.mjs",
+  wmtsBase: "https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.pixelkarte-grau/default/current/2056/"
+}, window.EROSION_CONFIG || {});
+
+const MONTHS = ["jan","feb","mrz","apr","mai","jun","jul","aug","sep","okt","nov","dez"];
+const NAMES  = ["Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"];
+const SHORT  = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
+const $ = id => document.getElementById(id);
+
+/* ---------- CRS und Kachelraster (wie im swisseo-browser) ---------- */
+const DEF2056 = "+proj=somerc +lat_0=46.9524055555556 +lon_0=7.43958333333333 +k_0=1 " +
+                "+x_0=2600000 +y_0=1200000 +ellps=bessel " +
+                "+towgs84=674.374,15.056,405.346,0,0,0,0 +units=m +no_defs";
+proj4.defs("EPSG:2056", DEF2056);
+const P2056 = proj4("EPSG:4326", "EPSG:2056");
+const RES = [4000,3750,3500,3250,3000,2750,2500,2250,2000,1750,1500,1250,1000,750,650,500,
+             250,100,50,20,10,5,2.5,2,1.5,1,0.5,0.25,0.1];           // swisstopo-WMTS-Raster (LV95), m/px je Stufe
+const ORIGIN = [2420000, 1350000];
+const TILE = 512, RES0 = 2560;                                       // Kachel 0/0/0: 512 px bei 2560 m/px; Zoom 8 = 10 m/px
+const WMTS_BOX = [2420000, 1030000, 2900000, 1350000];
+const mlZoom = r => Math.log2(RES0 / r);
+const toLV = ll => { const p = P2056.forward([ll.lng, ll.lat]); return { x: p[0], y: p[1] }; };
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const boxesMeet = (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
+const makeCanvas = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+const loadImg = url => new Promise((res, rej) => {
+  const im = new Image(); im.crossOrigin = "anonymous"; im.onload = () => res(im); im.onerror = () => rej(new Error("Bild " + url)); im.src = url;
+});
+
+/* ---------- Farben und Statistik ---------- */
+function makeLUT() {
+  const stops = [[26,152,80],[145,207,96],[217,239,139],[254,224,139],[252,141,89],[215,48,39]];   // grün -> gelb -> rot
+  const lut = new Uint8ClampedArray(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255 * (stops.length - 1), k = Math.min(Math.floor(t), stops.length - 2), f = t - k;
+    for (let c = 0; c < 3; c++) lut[i * 4 + c] = Math.round(stops[k][c] * (1 - f) + stops[k + 1][c] * f);
+    lut[i * 4 + 3] = 255;
+  }
+  return lut;
+}
+const lut = makeLUT();
+const isValid = (v, nodata) => v === v && isFinite(v) && v > -1e30 && v !== nodata;
+function pooledQuantile(list, q) {
+  let total = 0; list.forEach(l => total += l.data.length);
+  const stride = Math.max(1, Math.floor(total / 400000)), vals = [];
+  list.forEach(l => { for (let k = 0; k < l.data.length; k += stride) { const v = l.data[k]; if (isValid(v, l.nodata) && v > 0) vals.push(v); } });
+  if (!vals.length) return 1;
+  vals.sort((a, b) => a - b);
+  return vals[Math.min(vals.length - 1, Math.floor(q * vals.length))];
+}
+const niceMax = x => { const n = Number(Number(x).toPrecision(2)); return n > 0 ? n : 1; };
+
+/* ---------- COG-Zugriff: Pyramide + Window-Reads (nach swisseo-browser, Abschnitt 4) ---------- */
+const pyrCache = new Map(), cachedImages = [];
+let cacheChecks = 0;
+function trimTileCache() {       // dekodierte COG-Kacheln liegen je Bild im Cache; bei zu vielen wird geleert
+  if (++cacheChecks % 20) return;
+  let n = 0; cachedImages.forEach(im => { n += Object.keys(im.tiles || {}).length; });
+  if (n > 300) cachedImages.forEach(im => { im.tiles = {}; });
+}
+function pyramid(url) {
+  if (!pyrCache.has(url)) {
+    pyrCache.set(url, (async () => {
+      const tiff = await GeoTIFF.fromUrl(url, { cache: true, blockSize: 131072, cacheSize: 300 });
+      const n = await tiff.getImageCount(), full = await tiff.getImage(0);
+      const o = full.getOrigin(), r = full.getResolution();
+      const extW = full.getWidth() * Math.abs(r[0]), extH = full.getHeight() * Math.abs(r[1]);
+      const levels = [];
+      for (let i = 0; i < n; i++) {
+        const im = i === 0 ? full : await tiff.getImage(i), fd = im.fileDirectory;
+        if ((fd.NewSubfileType || 0) & 4) continue;                  // interne Maske, keine Overview
+        im.tiles = {}; cachedImages.push(im);
+        // Overviews tragen keine Geo-Tags, sie decken dieselbe Ausdehnung wie das Vollbild ab
+        levels.push({ im, w: im.getWidth(), h: im.getHeight(), rx: extW / im.getWidth(), ry: extH / im.getHeight() });
+      }
+      levels.sort((a, b) => a.rx - b.rx);
+      const nd = full.getGDALNoData();
+      return { ox: o[0], oy: o[1], levels, nodata: nd == null ? null : Number(nd),
+               bounds: [o[0], o[1] - extH, o[0] + extW, o[1]] };
+    })());
+  }
+  return pyrCache.get(url);
+}
+/* Ein W x H grosses Raster passend zu bbox (LV95) lesen; gröbste Overview, die die Pixelgrösse noch auflöst.
+   Ungültige Pixel und Pixel ausserhalb: NaN. */
+async function readGrid(url, bbox, W, H, signal) {
+  const p = await pyramid(url);
+  const target = (bbox[2] - bbox[0]) / W, targetY = (bbox[3] - bbox[1]) / H;
+  let li = 0;
+  for (let i = 0; i < p.levels.length; i++) { if (p.levels[i].rx <= target * 1.35) li = i; else break; }
+  const lv = p.levels[li];
+  const x0 = Math.max(0, Math.floor((bbox[0] - p.ox) / lv.rx)), x1 = Math.min(lv.w, Math.ceil((bbox[2] - p.ox) / lv.rx));
+  const y0 = Math.max(0, Math.floor((p.oy - bbox[3]) / lv.ry)), y1 = Math.min(lv.h, Math.ceil((p.oy - bbox[1]) / lv.ry));
+  if (x1 <= x0 || y1 <= y0) return null;
+  const r = await lv.im.readRasters({ window: [x0, y0, x1, y1], samples: [0], signal });
+  trimTileCache();
+  const raw = r[0], sw = x1 - x0, sh = y1 - y0;
+  const cols = new Int32Array(W), rows = new Int32Array(H);
+  for (let i = 0; i < W; i++) { const sc = Math.floor((bbox[0] + (i + 0.5) * target - p.ox) / lv.rx) - x0; cols[i] = sc >= 0 && sc < sw ? sc : -1; }
+  for (let j = 0; j < H; j++) { const sr = Math.floor((p.oy - (bbox[3] - (j + 0.5) * targetY)) / lv.ry) - y0; rows[j] = sr >= 0 && sr < sh ? sr * sw : -1; }
+  const out = new Float32Array(W * H).fill(NaN);
+  for (let j = 0; j < H; j++) {
+    const rb = rows[j]; if (rb < 0) continue;
+    for (let i = 0; i < W; i++) {
+      const sc = cols[i]; if (sc < 0) continue;
+      const v = raw[rb + sc]; if (isValid(v, p.nodata)) out[j * W + i] = v;
+    }
+  }
+  return out;
+}
+async function readPoint(url, x, y) {
+  const p = await pyramid(url), lv = p.levels[0];
+  const c = Math.floor((x - p.ox) / lv.rx), r = Math.floor((p.oy - y) / lv.ry);
+  if (c < 0 || r < 0 || c >= lv.w || r >= lv.h) return null;
+  const d = await lv.im.readRasters({ window: [c, r, c + 1, r + 1], samples: [0] });
+  return isValid(d[0][0], p.nodata) ? d[0][0] : null;
+}
+
+/* ---------- STAC ---------- */
+async function loadStac() {
+  const byMonth = {}; let url = CFG.stacItems, feats = [];
+  while (url && feats.length < 300) {
+    const r = await fetch(url); if (!r.ok) throw new Error("STAC-Antwort " + r.status);
+    const j = await r.json(); feats = feats.concat(j.features || []);
+    const nx = (j.links || []).find(l => l.rel === "next"); url = nx ? nx.href : null;
+  }
+  for (const f of feats) {
+    const m = MONTHS.findIndex(k => f.id.endsWith("_" + k));
+    const a = Object.values(f.assets || {}).find(x => /image\/tiff/.test(x.type || "") || /\.tiff?$/i.test(x.href || ""));
+    if (m >= 0 && a) byMonth[m] = { url: a.href, item: f.id };
+  }
+  return byMonth;
+}
+
+/* ---------- Programmstart ---------- */
+const state = { current: 0, maxVal: 1, autoMax: 1, hideZero: false, rev: 0, opacity: 0.85, ready: false, timer: null };
+const months = new Array(12);
+let map, maplibregl;
+
+function status(msg, kind) {
+  const s = $("status");
+  if (!msg) { s.style.display = "none"; return; }
+  s.className = "card " + (kind || "info"); s.innerHTML = msg; s.style.display = "block";
+}
+function progress(done, total, text) { $("loadText").textContent = text; $("bar").firstElementChild.style.width = Math.round(done / total * 100) + "%"; }
+
+SHORT.forEach((s, i) => { const sp = document.createElement("span"); sp.id = "tick" + i; sp.textContent = s; $("ticks").appendChild(sp); });
+(function () {
+  const stops = [];
+  for (let i = 0; i <= 8; i++) { const k = Math.round(i / 8 * 255) * 4; stops.push("rgb(" + lut[k] + "," + lut[k + 1] + "," + lut[k + 2] + ") " + (i / 8 * 100) + "%"); }
+  $("ramp").style.background = "linear-gradient(to right," + stops.join(",") + ")";
+})();
+
+/* MapLibre ist nur als ES-Modul veröffentlicht. Der Worker kommt vom CDN: er wird geholt, der abschliessende export entfernt
+   und als klassischer Worker aus einem blob: gestartet (so gibt es keine Cross-Origin-Worker-Sperre). */
+async function loadMapLibre() {
+  maplibregl = await import(CFG.maplibre);
+  const src = await (await fetch(CFG.maplibreWorker)).text();
+  const classic = src.replace(/export\s*\{[^}]*\}\s*;?\s*(\/\/# sourceMappingURL=\S*)?\s*$/, "");
+  maplibregl.setWorkerUrl(URL.createObjectURL(new Blob([classic], { type: "text/javascript" })) + "#worker.cjs");
+}
+
+const LAYERS = new Map();
+function registerProtocol() {
+  maplibregl.addProtocol("erosion", async (params, ctrl) => {
+    const m = /^erosion:\/\/(\w+)\/(\d+)\/(\d+)\/(\d+)/.exec(params.url), lyr = m && LAYERS.get(m[1]);
+    if (!lyr) return { data: null };
+    const z = +m[2], x = +m[3], y = +m[4], span = TILE * RES0 / 2 ** z;
+    const bbox = [ORIGIN[0] + x * span, ORIGIN[1] - (y + 1) * span, ORIGIN[0] + (x + 1) * span, ORIGIN[1] - y * span];
+    if (lyr.bounds && !boxesMeet(bbox, lyr.bounds)) return { data: null };
+    try {
+      const im = await lyr.draw(bbox, TILE, ctrl.signal);
+      if (ctrl.signal.aborted) throw new DOMException("Tile aborted", "AbortError");
+      return im ? { data: await createImageBitmap(im) } : { data: null };
+    } catch (err) {
+      if (ctrl.signal.aborted || (err && err.name === "AbortError")) throw err;
+      console.warn("Kachel", lyr.id, err);
+      lyr.errors = (lyr.errors || 0) + 1;
+      if (lyr.id !== "base" && lyr.errors === 3) status("<b>COG-Kacheln lassen sich nicht lesen.</b> Details in der Browser-Konsole (F12). Häufigste Ursache: fehlende CORS-/Range-Freigabe des Servers.", "err");
+      return { data: null };
+    }
+  });
+}
+function addRaster(id, draw, o) {
+  LAYERS.set(id, { id, draw, bounds: o.bounds || null, v: 0 });
+  map.addSource(id, { type: "raster", tiles: ["erosion://" + id + "/{z}/{x}/{y}?v=0"], tileSize: TILE, maxzoom: 14, attribution: o.attribution || "" });
+  map.addLayer({ id, type: "raster", source: id, layout: { visibility: o.visible === false ? "none" : "visible" },
+                 paint: { "raster-opacity": o.opacity != null ? o.opacity : 1, "raster-fade-duration": 0, "raster-resampling": o.resampling || "linear" } }, o.before);
+}
+
+/* Hintergrund: swisstopo-WMTS (LV95) in das 512-px-Kachelraster der Karte legen */
+function wmtsLevel(target) { let z = 8; for (let i = 8; i <= 26; i++) if (RES[i] >= target * 0.75) z = i; return z; }
+async function drawBase(bbox, N, signal) {
+  const target = (bbox[2] - bbox[0]) / N, z = wmtsLevel(target);
+  const n = clamp(Math.round(N * target / RES[z]), 64, 2048);
+  const cv = makeCanvas(n, n), ctx = cv.getContext("2d"); ctx.imageSmoothingEnabled = false;
+  const b = [Math.max(bbox[0], WMTS_BOX[0]), Math.max(bbox[1], WMTS_BOX[1]), Math.min(bbox[2], WMTS_BOX[2]), Math.min(bbox[3], WMTS_BOX[3])];
+  if (b[2] <= b[0] || b[3] <= b[1]) return cv;
+  const t = 256 * RES[z], pxm = (bbox[2] - bbox[0]) / n, px = v => Math.round(v / pxm);
+  const sx0 = Math.floor((b[0] - ORIGIN[0]) / t), sx1 = Math.ceil((b[2] - ORIGIN[0]) / t) - 1;
+  const sy0 = Math.floor((ORIGIN[1] - b[3]) / t), sy1 = Math.ceil((ORIGIN[1] - b[1]) / t) - 1;
+  const jobs = [];
+  for (let y = sy0; y <= sy1; y++) for (let x = sx0; x <= sx1; x++) jobs.push([x, y]);
+  await Promise.all(jobs.map(async ([x, y]) => {
+    if (signal && signal.aborted) return;
+    try {
+      const im = await loadImg(CFG.wmtsBase + z + "/" + x + "/" + y + ".jpeg");
+      const x0 = px(ORIGIN[0] + x * t - bbox[0]), x1 = px(ORIGIN[0] + (x + 1) * t - bbox[0]);
+      const y0 = px(bbox[3] - (ORIGIN[1] - y * t)), y1 = px(bbox[3] - (ORIGIN[1] - (y + 1) * t));
+      ctx.drawImage(im, x0, y0, x1 - x0, y1 - y0);
+    } catch (e) { /* ausserhalb der Abdeckung */ }
+  }));
+  return cv;
+}
+
+/* Datenkachel: COG lesen, einfärben */
+function colorize(g, N) {
+  const out = new ImageData(N, N), d = out.data, inv = 255 / state.maxVal, hz = state.hideZero;
+  for (let k = 0; k < g.length; k++) {
+    const v = g[k]; if (v !== v) continue;
+    if (hz && v <= 0) continue;
+    let t = v * inv; t = t < 0 ? 0 : (t > 255 ? 255 : (t | 0));
+    const o = k * 4, l = t * 4; d[o] = lut[l]; d[o + 1] = lut[l + 1]; d[o + 2] = lut[l + 2]; d[o + 3] = 255;
+  }
+  return out;
+}
+
+/* Monatsebenen: jede Ebene hat eine eigene Quelle. Beim Wechsel wird die neue Ebene obenauf gelegt und die alte erst
+   ausgeblendet, wenn die neue vollständig geladen ist (kein Flackern). */
+let stack = [];
+function applyRev(i) {
+  const lyr = LAYERS.get("m" + i);
+  if (lyr.v === state.rev) return;
+  lyr.v = state.rev;
+  map.getSource("m" + i).setTiles(["erosion://m" + i + "/{z}/{x}/{y}?v=" + state.rev]);
+}
+function prune() {
+  for (let p = stack.length - 1; p >= 0; p--) {
+    if (map.isSourceLoaded("m" + stack[p])) {
+      stack.slice(0, p).forEach(k => map.setLayoutProperty("m" + k, "visibility", "none"));
+      stack = stack.slice(p); break;
+    }
+  }
+}
+function show(i) {
+  state.current = ((i % 12) + 12) % 12; i = state.current;
+  $("slider").value = i; $("monthLabel").textContent = NAMES[i];
+  for (let k = 0; k < 12; k++) $("tick" + k).className = k === i ? "on" : "";
+  if (!state.ready) return;
+  applyRev(i);
+  map.setLayoutProperty("m" + i, "visibility", "visible");
+  map.setPaintProperty("m" + i, "raster-opacity", state.opacity);
+  map.moveLayer("m" + i, "z-over");
+  stack = stack.filter(k => k !== i); stack.push(i);
+  prune();
+}
+function redrawAll() { state.rev++; stack.forEach(applyRev); }
+
+function setPlaying(on) {
+  if (state.timer) { clearInterval(state.timer); state.timer = null; }
+  $("play").textContent = on ? "⏸" : "▶";
+  if (on) state.timer = setInterval(() => show(state.current + 1), Number($("speed").value));
+}
+
+async function init() {
+  try { await loadMapLibre(); }
+  catch (e) { $("loading").style.display = "none"; status("<b>MapLibre konnte nicht geladen werden:</b> " + e.message, "err"); return; }
+  registerProtocol();
+  maplibregl.addProjection({ name: "EPSG:2056", definition: DEF2056, projection: P2056, tileMatrixSet: { origin: ORIGIN, extentAtZoom0: TILE * RES0 } });
+
+  const c0 = P2056.inverse([2660000, 1190000]);
+  map = new maplibregl.Map({
+    container: "map", center: c0, zoom: mlZoom(Math.max(360000 / Math.max(window.innerWidth - 40, 300), 240000 / Math.max(window.innerHeight - 260, 200))),
+    minZoom: mlZoom(RES[8]), maxZoom: mlZoom(RES[22]),
+    attributionControl: { compact: true }, dragRotate: false, touchPitch: false, maxPitch: 0,
+    style: { version: 8, projection: { type: "EPSG:2056" }, transition: { duration: 0, delay: 0 }, sources: {},
+             layers: ["z-base", "z-data", "z-over"].map(id => ({ id, type: "background", layout: { visibility: "none" } })) }
+  });
+  map.touchZoomRotate.disableRotation(); map.keyboard.disableRotation();
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  await new Promise(r => map.isStyleLoaded() ? r() : map.once("style.load", r));
+  addRaster("base", drawBase, { before: "z-base", bounds: WMTS_BOX, attribution: '&copy; <a href="https://www.swisstopo.admin.ch">swisstopo</a>' });
+
+  // 1. STAC: COG-Adressen
+  progress(0, 3, "Lese STAC-Katalog …");
+  let byMonth = {}, stacOk = true;
+  try { byMonth = await loadStac(); }
+  catch (e) { stacOk = false; console.warn("STAC", e); }
+  const missing = MONTHS.map((m, i) => i).filter(i => !byMonth[i]);
+  if (missing.length) {
+    missing.forEach(i => { byMonth[i] = { url: CFG.fallbackBase + "erosion-gruenland_bodenabtrag_" + MONTHS[i] + "/erosion-gruenland_bodenabtrag_" + MONTHS[i] + "_2056.tif", item: MONTHS[i] }; });
+    status(stacOk ? "Im STAC fehlen Monate (" + missing.map(i => SHORT[i]).join(", ") + "), Standard-URLs ersetzt." : "STAC-Katalog nicht erreichbar, es werden die Standard-URLs verwendet.", "info");
+  }
+  MONTHS.forEach((m, i) => { months[i] = { i, url: byMonth[i].url, item: byMonth[i].item }; });
+
+  // 2. COG-Pyramiden öffnen, Farbskala aus den gröbsten Overviews
+  let done = 0, failed = null;
+  progress(0, 12, "Öffne COGs …");
+  const coarse = new Array(12);
+  await Promise.all(months.map(async mo => {
+    try {
+      const p = await pyramid(mo.url);
+      const cand = p.levels.filter(l => l.w >= 300), lv = cand.length ? cand[cand.length - 1] : p.levels[p.levels.length - 1];
+      const r = await lv.im.readRasters({ samples: [0] });
+      coarse[mo.i] = { data: r[0], nodata: p.nodata };
+    } catch (e) { failed = failed || { i: mo.i, e }; }
+    done++; progress(done, 12, "Öffne COGs … " + done + " / 12");
+  }));
+  if (failed) {
+    $("loading").style.display = "none";
+    status("<b>COG konnte nicht gelesen werden</b> (" + NAMES[failed.i] + "): " + (failed.e && failed.e.message ? failed.e.message : failed.e) +
+      "<br>Häufigste Ursache: fehlende CORS-/Range-Freigabe des Servers. Details in der Browser-Konsole (F12).", "err");
+    console.error(failed.e); return;
+  }
+  state.autoMax = niceMax(pooledQuantile(coarse, 0.98)); state.maxVal = state.autoMax; $("max").value = state.maxVal;
+
+  // 3. Ebenen anlegen, Karte auf die Daten zoomen
+  const b = (await pyramid(months[0].url)).bounds;
+  months.forEach(mo => addRaster("m" + mo.i, (bbox, N, signal) => readGrid(mo.url, bbox, N, N, signal).then(g => g && colorize(g, N)),
+    { before: "z-over", visible: false, opacity: state.opacity, bounds: b, resampling: "nearest", attribution: '&copy; <a href="https://www.bafu.admin.ch">BAFU</a>' }));
+  const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2, res = Math.max((b[2] - b[0]) / Math.max(window.innerWidth - 60, 300), (b[3] - b[1]) / Math.max(window.innerHeight - 280, 200));
+  map.jumpTo({ center: P2056.inverse([cx, cy]), zoom: Math.max(mlZoom(res), map.getMinZoom()) });
+
+  map.on("sourcedata", e => { if (e.sourceId && /^m\d+$/.test(e.sourceId)) prune(); });
+  map.on("idle", prune);
+  setupUi();
+  state.ready = true;
+  $("loading").style.display = "none";
+  state.current = new Date().getMonth();
+  show(state.current);
+  window.__erosion = { map, months, state, P2056, toLV, readPoint };    // für Tests / Konsole
+}
+
+function setupUi() {
+  ["slider", "prev", "play", "next", "max", "auto", "hideZero"].forEach(id => { $(id).disabled = false; });
+  $("slider").addEventListener("input", function () { show(Number(this.value)); });
+  $("prev").addEventListener("click", () => { setPlaying(false); show(state.current - 1); });
+  $("next").addEventListener("click", () => { setPlaying(false); show(state.current + 1); });
+  $("play").addEventListener("click", () => setPlaying(!state.timer));
+  $("speed").addEventListener("change", () => { if (state.timer) setPlaying(true); });
+  $("opacity").addEventListener("input", function () { state.opacity = Number(this.value); stack.forEach(k => map.setPaintProperty("m" + k, "raster-opacity", state.opacity)); });
+  document.addEventListener("keydown", e => {
+    if (!state.ready || (/INPUT|SELECT/.test(e.target.tagName) && e.target.type !== "range")) return;
+    if (e.key === "ArrowLeft") { setPlaying(false); show(state.current - 1); }
+    else if (e.key === "ArrowRight") { setPlaying(false); show(state.current + 1); }
+    else if (e.key === " ") { e.preventDefault(); setPlaying(!state.timer); }
+  });
+  let rt = null;
+  const redrawSoon = () => { clearTimeout(rt); rt = setTimeout(redrawAll, 250); };
+  $("max").addEventListener("input", function () { const v = Number(this.value); if (v > 0) { state.maxVal = v; redrawSoon(); } });
+  $("auto").addEventListener("click", () => { state.maxVal = state.autoMax; $("max").value = state.autoMax; redrawSoon(); });
+  $("hideZero").addEventListener("change", function () { state.hideZero = this.checked; redrawSoon(); });
+
+  // Wert unter dem Mauszeiger (ein Pixel aus dem COG, Vollauflösung)
+  const ro = $("readout"); let seq = 0, last = 0;
+  map.on("mousemove", e => {
+    const now = performance.now(); if (now - last < 70) return; last = now;
+    const my = ++seq, p = toLV(e.lngLat), fmt = v => Math.round(v).toLocaleString("de-CH");
+    readPoint(months[state.current].url, p.x, p.y).then(v => {
+      if (my !== seq) return;
+      if (v == null) { ro.style.display = "none"; return; }
+      ro.style.display = "block";
+      ro.innerHTML = "<b>" + NAMES[state.current] + "</b><br>" + (Math.round(v * 1000) / 1000) + " t/(ha·Monat)<div class='xy'>LV95 " + fmt(p.x) + " / " + fmt(p.y) + "</div>";
+    }).catch(() => {});
+  });
+  map.on("mouseout", () => { seq++; ro.style.display = "none"; });
+}
+
+init();
+</script>
+</body>
+</html>
